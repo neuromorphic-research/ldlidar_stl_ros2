@@ -37,7 +37,12 @@
 #ifndef LINUX
 #include <windows.h>
 #else
-//#include <pthread.h>
+// UNCOMMENTED (neuromorphic-research fork). This class has a pthread_mutex_t member
+// and calls pthread_mutex_lock/unlock, so it always needed this header; on older
+// toolchains it arrived transitively through <string>/<chrono>. GCC 13 / glibc 2.39
+// (Ubuntu 24.04, the ROS 2 Jazzy base) no longer leaks it, and the build fails with
+// "'pthread_mutex_lock' was not declared in this scope".
+#include <pthread.h>
 #include <stdarg.h>
 #define printf_s(fileptr,str)  (fprintf(fileptr,"%s",str))
 #define __in

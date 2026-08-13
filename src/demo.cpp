@@ -163,8 +163,11 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   // Adjust the parameters according to the demand
   angle_min = 0;
   angle_max = (2 * M_PI);
-  range_min = 0.02;
-  range_max = 25;
+  // FORK: operator-set band. This unit is a close-range bumper for table legs, not a
+  // mapping sensor. Below 0.25 m is the robots own body; beyond 0.60 m a 2 cm scan plane
+  // grazes a floor that undulates 3-9 cm here, so the far cut also suppresses floor strikes.
+  range_min = 0.32;
+  range_max = 0.60;
   int beam_size = static_cast<int>(src.size());
   angle_increment = (angle_max - angle_min) / (float)(beam_size -1);
   // Calculate the number of scanning points
@@ -211,6 +214,11 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
             index, beam_size, angle, angle_min, angle_increment);
         }
 
+        // FORK: drop out-of-band returns. NaN, not 0.0 -- consumers read 0.0 as a valid
+        // zero-distance hit and NaN as no return, and the costmap acts on that difference.
+        if (range < range_min || range > range_max) {
+          continue;
+        }
         if (setting.laser_scan_dir) {
           int index_anticlockwise = beam_size - index - 1;
           // If the current content is Nan, it is assigned directly

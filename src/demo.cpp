@@ -192,12 +192,12 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   // FORK: operator-set band. This unit is a close-range bumper for table legs, not a
   // mapping sensor. Below 0.32 m is the robots own body; the far cut is a floor-strike
   // suppressor, since a 2 cm scan plane over a floor that undulates 3-9 cm here starts
-  // grazing it past about half a metre. 0.60 -> 0.70 on operator request: 10 cm more
+  // grazing it past about half a metre. 0.60 -> 0.65 on operator request: 5 cm more
   // warning, paid for in floor. First suspect if phantom holds appear in docking or
   // teleop -- a parked robot on open floor should show ZERO finite returns.
   // Mirrored in docking_node's _selfcheck; run it after changing this.
   range_min = 0.32;
-  range_max = 0.70;
+  range_max = 0.65;
   int beam_size = static_cast<int>(src.size());
   angle_increment = (angle_max - angle_min) / (float)(beam_size -1);
   // Calculate the number of scanning points

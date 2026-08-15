@@ -19,6 +19,8 @@
  * limitations under the License.
  */
 
+#include <cmath>
+#include <cstdlib>
 #include "ros2_api.h"
 #include "ldlidar_driver.h"
 
@@ -26,6 +28,14 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src, double lidar_spin_freq, 
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub);
 
 uint64_t GetSystemTimeStamp(void);
+// FORK: front/rear sector mask. File scope because the filter runs in the scan publish
+// function, not in main. Centres are SENSOR-frame degrees, 180 apart; half width 45 gives
+// a 90 deg cone each.
+static constexpr bool kSectorMaskEnabled = true;
+static constexpr float kSectorADeg = 90.0f;   // MEASURED: RViz showed 0/180 keeping LEFT+RIGHT, so front/rear is 90/270
+static constexpr float kSectorBDeg = 270.0f;
+static constexpr float kSectorHalfWidthDeg = 45.0f;
+
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
@@ -115,14 +125,30 @@ int main(int argc, char **argv) {
   ldlidar::Points2D laser_scan_points;
   double lidar_scan_freq;
   RCLCPP_INFO(node->get_logger(), "Publish topic message:ldlidar scan data.");
+  // ~10 polls/s, so 100 is about 10 s of silence: long enough to ride out a transient,
+  // short enough that a dead lidar recovers on its own rather than waiting for a human.
+  constexpr int kTimeoutStreakLimit = 100;
+  int timeout_streak = 0;
   while (rclcpp::ok()) {
     switch (ldlidarnode->GetLaserScanData(laser_scan_points, 1500)){
       case ldlidar::LidarStatus::NORMAL: 
+        timeout_streak = 0;
         ldlidarnode->GetLidarScanFreq(lidar_scan_freq);
         ToLaserscanMessagePublish(laser_scan_points, lidar_scan_freq, setting, node, publisher);
         break;
       case ldlidar::LidarStatus::DATA_TIME_OUT:
         RCLCPP_ERROR(node->get_logger(), "get ldlidar data is time out, please check your lidar device.");
+        // FORK: die so the container restarts. The upstream loop logs this at ~10 Hz and
+        // keeps running forever, so the process never exits, Docker restart=unless-stopped
+        // never fires, and the container reports Up while publishing nothing. A USB or
+        // power glitch on the CP210x therefore took the lidar out until someone noticed.
+        // Exiting is the recovery: a fresh process re-opens the serial port.
+        if (++timeout_streak >= kTimeoutStreakLimit) {
+          RCLCPP_FATAL(node->get_logger(),
+                       "no lidar data for %d consecutive polls; exiting so the container restarts",
+                       kTimeoutStreakLimit);
+          std::_Exit(70);
+        }
         break;
       case ldlidar::LidarStatus::DATA_WAIT:
         break;
@@ -214,6 +240,20 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
             index, beam_size, angle, angle_min, angle_increment);
         }
 
+        // FORK: keep only the FRONT and REAR cones; mask left and right.
+        // The driver's own angle_crop keeps ONE contiguous sector and we need two, so it
+        // is done here. Angles are in the SENSOR frame: the unit is mounted upside down
+        // (roll pi) and yawed -90 deg, so sensor zero is NOT robot-forward. The centres
+        // below are therefore tuning knobs, not physics -- check the red cloud on the
+        // dashboard and rotate them if the kept cones land on the sides.
+        if (kSectorMaskEnabled) {
+          const float deg = angle * 180.0f / static_cast<float>(M_PI);
+          const float da = std::fabs(std::fmod(deg - kSectorADeg + 540.0f, 360.0f) - 180.0f);
+          const float db = std::fabs(std::fmod(deg - kSectorBDeg + 540.0f, 360.0f) - 180.0f);
+          if (da > kSectorHalfWidthDeg && db > kSectorHalfWidthDeg) {
+            continue;
+          }
+        }
         // FORK: drop out-of-band returns. NaN, not 0.0 -- consumers read 0.0 as a valid
         // zero-distance hit and NaN as no return, and the costmap acts on that difference.
         if (range < range_min || range > range_max) {

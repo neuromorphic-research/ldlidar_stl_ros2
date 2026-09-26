@@ -248,7 +248,7 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
     output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     output.intensities.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     for (auto point : src) {
-      float range = point.distance / 1000.f;  // distance unit transform to meters
+      double range = point.distance / 1000.0;  // distance unit transform to meters
       float intensity = point.intensity;      // laser receive intensity 
       float dir_angle = point.angle;
 
@@ -284,7 +284,7 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
         }
         // FORK: drop out-of-band returns. NaN, not 0.0 -- consumers read 0.0 as a valid
         // zero-distance hit and NaN as no return, and the costmap acts on that difference.
-        if (!inRangeBand(range, range_min, range_max)) {
+        if (!inRangeBand(range, setting.range_min, setting.range_max)) {
           continue;
         }
         if (setting.laser_scan_dir) {

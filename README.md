@@ -317,3 +317,26 @@ colcon build
 ```bash
 rviz2
 ```
+
+## Per-robot scan masks
+
+The legacy front/rear-only mask remains enabled by default (`sector_mask_enabled: true`).
+Set it to `false` to restore left/right coverage. The existing 0.32–0.60 m distance band is unchanged.
+
+An optional close-return mask uses sensor-native angles **before** LaserScan index reversal:
+`self_mask_min_deg`, `self_mask_max_deg` (ordered bounds in 0–360 degrees), and
+`self_mask_range_max` (metres; zero disables it). Only returns closer than that range
+inside the sector are removed; farther obstacles remain. Parameters are read at startup.
+Invalid/non-finite bounds are rejected.
+
+MEDRA AMR 2 commissioning: disable the legacy sector mask and use 240–260 sensor degrees,
+0.38 m. With its roll-pi/yaw-minus-pi/2 mount, this is approximately 150–170 degrees
+rear-left in the robot frame. The operator identified chassis returns measured at
+0.33–0.36 m. This is an instance-specific setting, not a default for other robots.
+
+Run the standalone regression check from the repository root:
+
+```sh
+c++ -std=c++14 -Iinclude scripts/test_scan_mask.cpp -o /tmp/test_scan_mask
+/tmp/test_scan_mask
+```

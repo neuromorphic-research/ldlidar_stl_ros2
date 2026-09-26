@@ -318,25 +318,66 @@ colcon build
 rviz2
 ```
 
-## Per-robot scan masks
+## Startup configuration
 
-The legacy front/rear-only mask remains enabled by default (`sector_mask_enabled: true`).
-Set it to `false` to restore left/right coverage. The existing 0.32–0.60 m distance band is unchanged.
-
-An optional close-return mask uses sensor-native angles **before** LaserScan index reversal:
-`self_mask_min_deg`, `self_mask_max_deg` (ordered bounds in 0–360 degrees), and
-`self_mask_range_max` (metres; zero disables it). Only returns closer than that range
-inside the sector are removed; farther obstacles remain. Parameters are read at startup.
-Invalid/non-finite bounds are rejected.
-
-MEDRA AMR 2 commissioning: disable the legacy sector mask and use 240–260 sensor degrees,
-0.38 m. With its roll-pi/yaw-minus-pi/2 mount, this is approximately 150–170 degrees
-rear-left in the robot frame. The operator identified chassis returns measured at
-0.33–0.36 m. This is an instance-specific setting, not a default for other robots.
-
-Run the standalone regression check from the repository root:
+Pass a ROS parameter YAML file to the driver; tuning does not require rebuilding:
 
 ```sh
-c++ -std=c++14 -Iinclude scripts/test_scan_mask.cpp -o /tmp/test_scan_mask
+ros2 run ldlidar_stl_ros2 ldlidar_stl_ros2_node --ros-args --params-file /path/to/d500.yaml -r __node:=d500_driver
+ros2 param dump /d500_driver
+```
+
+Example for MEDRA AMR 2 (instance-specific mount, not a default for other robots):
+
+```yaml
+/**:
+  ros__parameters:
+    product_name: LDLiDAR_LD19
+    port_name: /dev/d500
+    port_baudrate: 230400
+    topic_name: /d500/scan
+    frame_id: d500_link
+    laser_scan_dir: true
+    noise_filter_enabled: true
+    range_min: 0.32
+    range_max: 0.60
+    sector_mask_enabled: false
+    sector_first_center_deg: 90.0
+    sector_second_center_deg: 270.0
+    sector_half_width_deg: 45.0
+    self_mask_min_deg: 240.0
+    self_mask_max_deg: 260.0
+    self_mask_range_max: 0.38
+    enable_angle_crop_func: false
+    angle_crop_min: 0.0
+    angle_crop_max: 0.0
+```
+
+`range_min`/`range_max` control both accepted returns and LaserScan metadata
+(default 0.32–0.60 m). Require finite `0 <= min < max`.
+`noise_filter_enabled` controls the vendor SDK filter (default true).
+
+`sector_mask_enabled` defaults true for backward compatibility: keep returns inside
+either cone centered at `sector_first_center_deg`/`sector_second_center_deg`
+(default 90/270), with `sector_half_width_deg` (default 45). Centers must be in
+0–360 degrees and half width in 0–180; cones wrap through zero.
+Set enabled to false to restore left/right coverage.
+
+The self mask removes only returns **strictly closer** than `self_mask_range_max`
+metres inside its inclusive, ordered 0–360 degree bounds. Zero range disables it
+(the default). The optional angle crop removes the entire distance range within
+its inclusive, ordered bounds. All angles are sensor-native, **before** LaserScan
+index reversal. Rejected returns are NaN. MEDRA AMR 2's self-mask example covers
+approximately robot rear-left 150–170 degrees with its current mount.
+
+Settings are validated before opening serial. Parameters are read-only at runtime:
+edit the persistent YAML and restart the driver. `ros2 param get`, `dump`, and
+`describe` are serviced while the driver runs; `set` rejects startup-only changes
+instead of appearing to succeed without changing the scan.
+
+Run the standalone regression check (also registered in CTest):
+
+```sh
+c++ -std=c++14 -Wall -Wextra -Werror -Iinclude scripts/test_scan_mask.cpp -o /tmp/test_scan_mask
 /tmp/test_scan_mask
 ```

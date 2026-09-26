@@ -21,6 +21,15 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
 if(BUILD_TESTING)
+  enable_testing()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME startup_configuration
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_configuration.py
+            $<TARGET_FILE:${PROJECT_NAME}_node>)
+  add_executable(test_scan_mask scripts/test_scan_mask.cpp)
+  target_include_directories(test_scan_mask PRIVATE include)
+  target_compile_options(test_scan_mask PRIVATE -UNDEBUG)
+  add_test(NAME scan_mask COMMAND test_scan_mask)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # uncomment the line when a copyright and license is not present in all source files

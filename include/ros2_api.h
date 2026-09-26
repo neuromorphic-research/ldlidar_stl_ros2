@@ -32,6 +32,15 @@ struct LaserScanSetting
   bool enable_angle_crop_func;
   double angle_crop_min;
   double angle_crop_max;
+  double range_min;
+  double range_max;
+  double sector_first_center_deg;
+  double sector_second_center_deg;
+  double sector_half_width_deg;
+  bool sector_mask_enabled;
+  double self_mask_min_deg;
+  double self_mask_max_deg;
+  double self_mask_range_max;
 };
 
 #endif //__ROS_API_H__

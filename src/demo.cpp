@@ -22,19 +22,13 @@
 #include <cmath>
 #include <cstdlib>
 #include "ros2_api.h"
+#include "scan_mask.hpp"
 #include "ldlidar_driver.h"
 
 void  ToLaserscanMessagePublish(ldlidar::Points2D& src, double lidar_spin_freq, LaserScanSetting& setting,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub);
 
 uint64_t GetSystemTimeStamp(void);
-// FORK: front/rear sector mask. File scope because the filter runs in the scan publish
-// function, not in main. Centres are SENSOR-frame degrees, 180 apart; half width 45 gives
-// a 90 deg cone each.
-static constexpr bool kSectorMaskEnabled = true;
-static constexpr float kSectorADeg = 90.0f;   // MEASURED: RViz showed 0/180 keeping LEFT+RIGHT, so front/rear is 90/270
-static constexpr float kSectorBDeg = 270.0f;
-static constexpr float kSectorHalfWidthDeg = 45.0f;
 
 
 int main(int argc, char **argv) {
@@ -43,7 +37,7 @@ int main(int argc, char **argv) {
   std::string product_name;
 	std::string topic_name;
 	std::string port_name;
-  int serial_port_baudrate;
+  int serial_port_baudrate = 230400;
   ldlidar::LDType type_name;
   LaserScanSetting setting;
 	setting.frame_id = "base_laser";
@@ -51,17 +45,50 @@ int main(int argc, char **argv) {
   setting.enable_angle_crop_func = false;
   setting.angle_crop_min = 0.0;
   setting.angle_crop_max = 0.0;
+  bool sector_mask_enabled = true;
+  double self_mask_min_deg = 0.0, self_mask_max_deg = 0.0, self_mask_range_max = 0.0;
   
+  // Startup-only configuration: parameter queries work, edits require a restart.
+  rcl_interfaces::msg::ParameterDescriptor startup;
+  startup.read_only = true;
+  startup.description = "Startup setting; edit the YAML file and restart the driver";
+
   // declare ros2 param
-  node->declare_parameter<std::string>("product_name", product_name);
-  node->declare_parameter<std::string>("topic_name", topic_name);
-  node->declare_parameter<std::string>("frame_id", setting.frame_id);
-  node->declare_parameter<std::string>("port_name", port_name);
-  node->declare_parameter<int>("port_baudrate", serial_port_baudrate);
-  node->declare_parameter<bool>("laser_scan_dir", setting.laser_scan_dir);
-  node->declare_parameter<bool>("enable_angle_crop_func", setting.enable_angle_crop_func);
-  node->declare_parameter<double>("angle_crop_min", setting.angle_crop_min);
-  node->declare_parameter<double>("angle_crop_max", setting.angle_crop_max);
+  node->declare_parameter<std::string>("product_name", product_name, startup);
+  node->declare_parameter<std::string>("topic_name", topic_name, startup);
+  node->declare_parameter<std::string>("frame_id", setting.frame_id, startup);
+  node->declare_parameter<std::string>("port_name", port_name, startup);
+  node->declare_parameter<int>("port_baudrate", serial_port_baudrate, startup);
+  node->declare_parameter<bool>("laser_scan_dir", setting.laser_scan_dir, startup);
+  node->declare_parameter<bool>("enable_angle_crop_func", setting.enable_angle_crop_func, startup);
+  node->declare_parameter<double>("angle_crop_min", setting.angle_crop_min, startup);
+  node->declare_parameter<double>("angle_crop_max", setting.angle_crop_max, startup);
+
+  sector_mask_enabled = node->declare_parameter<bool>("sector_mask_enabled", true, startup);
+  self_mask_min_deg = node->declare_parameter<double>("self_mask_min_deg", 0.0, startup);
+  self_mask_max_deg = node->declare_parameter<double>("self_mask_max_deg", 0.0, startup);
+  self_mask_range_max = node->declare_parameter<double>("self_mask_range_max", 0.0, startup);
+  if (!validSelfMask(self_mask_min_deg, self_mask_max_deg, self_mask_range_max)) {
+    RCLCPP_ERROR(node->get_logger(), "Invalid self mask: use ordered sensor angles 0..360 and a nonnegative finite range");
+    return EXIT_FAILURE;
+  }
+  setting.sector_mask_enabled = sector_mask_enabled;
+  setting.self_mask_min_deg = self_mask_min_deg;
+  setting.self_mask_max_deg = self_mask_max_deg;
+  setting.self_mask_range_max = self_mask_range_max;
+
+  setting.range_min = node->declare_parameter<double>("range_min", 0.32, startup);
+  setting.range_max = node->declare_parameter<double>("range_max", 0.60, startup);
+  setting.sector_first_center_deg = node->declare_parameter<double>("sector_first_center_deg", 90.0, startup);
+  setting.sector_second_center_deg = node->declare_parameter<double>("sector_second_center_deg", 270.0, startup);
+  setting.sector_half_width_deg = node->declare_parameter<double>("sector_half_width_deg", 45.0, startup);
+  const bool noise_filter_enabled = node->declare_parameter<bool>("noise_filter_enabled", true, startup);
+  if (!validRangeBand(setting.range_min, setting.range_max) ||
+      !validSectors(setting.sector_first_center_deg, setting.sector_second_center_deg,
+                    setting.sector_half_width_deg)) {
+    RCLCPP_ERROR(node->get_logger(), "Invalid range band or sector mask: finite 0 <= range_min < range_max, centers 0..360, half width 0..180 required");
+    return EXIT_FAILURE;
+  }
 
   // get ros2 param
   node->get_parameter("product_name", product_name);
@@ -73,6 +100,12 @@ int main(int argc, char **argv) {
   node->get_parameter("enable_angle_crop_func", setting.enable_angle_crop_func);
   node->get_parameter("angle_crop_min", setting.angle_crop_min);
   node->get_parameter("angle_crop_max", setting.angle_crop_max);
+
+  if (!validSelfMask(setting.angle_crop_min, setting.angle_crop_max, 0.0) ||
+      serial_port_baudrate <= 0 || port_name.empty() || topic_name.empty() || setting.frame_id.empty()) {
+    RCLCPP_ERROR(node->get_logger(), "Invalid crop bounds, serial port/baud, topic or frame");
+    return EXIT_FAILURE;
+  }
 
   ldlidar::LDLidarDriver* ldlidarnode = new ldlidar::LDLidarDriver();
 
@@ -100,7 +133,7 @@ int main(int argc, char **argv) {
 
   ldlidarnode->RegisterGetTimestampFunctional(std::bind(&GetSystemTimeStamp)); 
 
-  ldlidarnode->EnableFilterAlgorithnmProcess(true);
+  ldlidarnode->EnableFilterAlgorithnmProcess(noise_filter_enabled);
 
   if (ldlidarnode->Start(type_name, port_name, serial_port_baudrate, ldlidar::COMM_SERIAL_MODE)) {
     RCLCPP_INFO(node->get_logger(), "ldlidar node start is success");
@@ -130,6 +163,7 @@ int main(int argc, char **argv) {
   constexpr int kTimeoutStreakLimit = 100;
   int timeout_streak = 0;
   while (rclcpp::ok()) {
+    rclcpp::spin_some(node);
     switch (ldlidarnode->GetLaserScanData(laser_scan_points, 1500)){
       case ldlidar::LidarStatus::NORMAL: 
         timeout_streak = 0;
@@ -189,12 +223,10 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   // Adjust the parameters according to the demand
   angle_min = 0;
   angle_max = (2 * M_PI);
-  // FORK: operator-set band. This unit is a close-range bumper for table legs, not a
-  // mapping sensor. Below 0.25 m is the robots own body; beyond 0.60 m a 2 cm scan plane
-  // grazes a floor that undulates 3-9 cm here, so the far cut also suppresses floor strikes.
-  range_min = 0.32;
-  range_max = 0.60;
+  range_min = setting.range_min;
+  range_max = setting.range_max;
   int beam_size = static_cast<int>(src.size());
+  if (beam_size <= 1) return;
   angle_increment = (angle_max - angle_min) / (float)(beam_size -1);
   // Calculate the number of scanning points
   if (lidar_spin_freq > 0) {
@@ -216,7 +248,7 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
     output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     output.intensities.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     for (auto point : src) {
-      float range = point.distance / 1000.f;  // distance unit transform to meters
+      double range = point.distance / 1000.0;  // distance unit transform to meters
       float intensity = point.intensity;      // laser receive intensity 
       float dir_angle = point.angle;
 
@@ -238,25 +270,21 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
         if (index < 0) {
           RCLCPP_ERROR(node->get_logger(), "error index: %d, beam_size: %d, angle: %f, output.angle_min: %f, output.angle_increment: %f", 
             index, beam_size, angle, angle_min, angle_increment);
+          continue;
         }
 
-        // FORK: keep only the FRONT and REAR cones; mask left and right.
-        // The driver's own angle_crop keeps ONE contiguous sector and we need two, so it
-        // is done here. Angles are in the SENSOR frame: the unit is mounted upside down
-        // (roll pi) and yawed -90 deg, so sensor zero is NOT robot-forward. The centres
-        // below are therefore tuning knobs, not physics -- check the red cloud on the
-        // dashboard and rotate them if the kept cones land on the sides.
-        if (kSectorMaskEnabled) {
-          const float deg = angle * 180.0f / static_cast<float>(M_PI);
-          const float da = std::fabs(std::fmod(deg - kSectorADeg + 540.0f, 360.0f) - 180.0f);
-          const float db = std::fabs(std::fmod(deg - kSectorBDeg + 540.0f, 360.0f) - 180.0f);
-          if (da > kSectorHalfWidthDeg && db > kSectorHalfWidthDeg) {
-            continue;
-          }
+        // Sensor-native angles, before the clockwise/counterclockwise output mapping.
+        // Keep the legacy mask by default; each robot can disable it and supply a
+        // bounded self-return mask without hiding farther obstacles in that sector.
+        if (maskedReturn(dir_angle, range, setting.sector_mask_enabled,
+                         setting.self_mask_min_deg, setting.self_mask_max_deg,
+                         setting.self_mask_range_max, setting.sector_first_center_deg,
+                         setting.sector_second_center_deg, setting.sector_half_width_deg)) {
+          continue;
         }
         // FORK: drop out-of-band returns. NaN, not 0.0 -- consumers read 0.0 as a valid
         // zero-distance hit and NaN as no return, and the costmap acts on that difference.
-        if (range < range_min || range > range_max) {
+        if (!inRangeBand(range, setting.range_min, setting.range_max)) {
           continue;
         }
         if (setting.laser_scan_dir) {
